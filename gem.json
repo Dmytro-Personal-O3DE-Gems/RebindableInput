@@ -1,0 +1,30 @@
+{
+    "gem_name": "RebindableInput",
+    "version": "1.0.0",
+    "display_name": "Rebindable Input",
+    "license": "MIT",
+    "license_url": "https://mit-license.org/",
+    "origin": "Dmytro Shyshkin",
+    "origin_url": "",
+    "type": "Code",
+    "summary": "Fork of StartingPointInput with runtime rebinding: input bindings can be read and changed while the game runs, and the bound keys are provided as input hints for UI. Keeps the editor workflow for bindings and sends the same input events as StartingPointInput.",
+    "canonical_tags": [
+        "Gem"
+    ],
+    "user_tags": [
+        "RebindableInput"
+    ],
+    "platforms": [
+        "iOS","Windows","Android","Linux"
+    ],
+    "icon_path": "",
+    "requirements": "Requires StartingPointInput (its InputEventNotificationBus is used, so existing listeners keep working without changes) and InputHintsContract (implemented by this gem). Do not use StartingPointInput’s Input component for the same actions on the same entity, or every event will be sent twice.",
+    "documentation_url": "",
+    "dependencies": [
+    ],
+    "repo_uri": "",
+    "compatible_engines": [
+    ],
+    "engine_api_dependencies":[
+    ]
+}

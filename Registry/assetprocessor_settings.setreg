@@ -1,0 +1,18 @@
+{
+    "Amazon": {
+        "AssetProcessor": {
+            "Settings": {
+                "ScanFolder RebindableInput/Assets": {
+                    "watch": "@GEMROOT:RebindableInput@/Assets",
+                    "recursive": 1,
+                    "order": 101
+                },
+                "ScanFolder RebindableInput/Registry": {
+                    "watch": "@GEMROOT:RebindableInput@/Registry",
+                    "recursive": 1,
+                    "order": 102
+                }
+            }
+        }
+    }
+}
