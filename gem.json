@@ -12,19 +12,22 @@
         "Gem"
     ],
     "user_tags": [
-        "RebindableInput"
+        "RebindableInput",
+        "Input"
     ],
     "platforms": [
-        "iOS","Windows","Android","Linux"
+        "iOS",
+        "Windows",
+        "Android",
+        "Linux"
     ],
     "icon_path": "",
-    "requirements": "Requires StartingPointInput (its InputEventNotificationBus is used, so existing listeners keep working without changes) and InputHintsContract (implemented by this gem). Do not use StartingPointInput’s Input component for the same actions on the same entity, or every event will be sent twice.",
+    "requirements": "Requires StartingPointInput (its InputEventNotificationBus is used, so existing listeners keep working without changes) and InputHintsContract (implemented by this gem). Do not use StartingPointInput's Input component for the same actions on the same entity, or every event will be sent twice.",
     "documentation_url": "",
     "dependencies": [
+        "StartingPointInput"
     ],
     "repo_uri": "",
-    "compatible_engines": [
-    ],
-    "engine_api_dependencies":[
-    ]
+    "compatible_engines": [],
+    "engine_api_dependencies": []
 }

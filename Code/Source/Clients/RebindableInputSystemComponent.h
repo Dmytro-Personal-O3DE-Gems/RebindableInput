@@ -2,15 +2,19 @@
 #pragma once
 
 #include <AzCore/Component/Component.h>
-#include <AzCore/Component/TickBus.h>
+#include <AzCore/std/smart_ptr/unique_ptr.h>
+#include <AzFramework/Asset/GenericAssetHandler.h>
 #include <RebindableInput/RebindableInputBus.h>
+
+#include <InputEventBindings.h>
 
 namespace RebindableInput
 {
+    //! Reflects the binding classes and registers the .keybinds asset type,
+    //! like StartingPointInputSystemComponent does for .inputbindings.
     class RebindableInputSystemComponent
         : public AZ::Component
         , protected RebindableInputRequestBus::Handler
-        , public AZ::TickBus::Handler
     {
     public:
         AZ_COMPONENT_DECL(RebindableInputSystemComponent);
@@ -38,10 +42,9 @@ namespace RebindableInput
         void Deactivate() override;
         ////////////////////////////////////////////////////////////////////////
 
-        ////////////////////////////////////////////////////////////////////////
-        // AZTickBus interface implementation
-        void OnTick(float deltaTime, AZ::ScriptTimePoint time) override;
-        ////////////////////////////////////////////////////////////////////////
+    private:
+        //! Loads and saves .keybinds files. Requires the asset manager ("AssetDatabaseService").
+        AZStd::unique_ptr<AzFramework::GenericAssetHandler<InputEventBindingsAsset>> m_inputEventBindingsAssetHandler;
     };
 
 } // namespace RebindableInput

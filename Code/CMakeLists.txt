@@ -50,6 +50,9 @@ ly_add_target(
         PUBLIC
             AZ::AzCore
             AZ::AzFramework
+            # The input events are sent on StartingPointInput's InputEventNotificationBus,
+            # and the component handles its InputConfigurationComponentRequestBus.
+            Gem::StartingPointInput
 )
 
 # Here add ${gem_name} target, it depends on the Private Object library and Public API interface

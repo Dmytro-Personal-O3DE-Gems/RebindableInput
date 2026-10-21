@@ -5,6 +5,7 @@
 #include <RebindableInput/RebindableInputTypeIds.h>
 
 #include <Clients/RebindableInputSystemComponent.h>
+#include <RebindableInputComponent.h>
 
 namespace RebindableInput
 {
@@ -21,6 +22,7 @@ namespace RebindableInput
         // This happens through the [MyComponent]::Reflect() function.
         m_descriptors.insert(m_descriptors.end(), {
             RebindableInputSystemComponent::CreateDescriptor(),
+            RebindableInputComponent::CreateDescriptor(),
             });
     }
 

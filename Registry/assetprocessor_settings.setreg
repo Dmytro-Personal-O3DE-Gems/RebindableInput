@@ -11,6 +11,14 @@
                     "watch": "@GEMROOT:RebindableInput@/Registry",
                     "recursive": 1,
                     "order": 102
+                },
+                // Same as the engine's "RC inputbindings" rule (Registry/AssetProcessorPlatformConfig.setreg):
+                // .keybinds files are copied to the cache as InputEventBindingsAsset of this gem.
+                // Without this rule the files are not processed, and the component cannot find them.
+                "RC keybinds": {
+                    "glob": "*.keybinds",
+                    "params": "copy",
+                    "productAssetType": "{469F3E72-B34D-47C9-BF4E-6953C2E2B237}"
                 }
             }
         }
