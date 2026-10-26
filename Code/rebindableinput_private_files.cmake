@@ -6,6 +6,7 @@ set(FILES
     Source/Clients/RebindableInputSystemComponent.h
     Source/RebindableInputComponent.cpp
     Source/RebindableInputComponent.h
+    Source/BindingsRegistry.h
     Source/InputEventBindings.h
     Source/InputEventGroup.h
     Source/InputEventMap.cpp

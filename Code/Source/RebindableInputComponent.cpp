@@ -7,15 +7,16 @@
  * Forked from Gems/StartingPointInput/Code/Source/InputConfigurationComponent.cpp (O3DE, tag 2605.0)
  * into the RebindableInput gem.
  * Changes: renamed to RebindableInputComponent, moved to the RebindableInput namespace, Script Canvas parts removed,
- * no serialization version history (this is a new component), also incompatible with "InputConfigurationService".
+ * no serialization version history (this is a new component), also incompatible with "InputConfigurationService",
+ * the bindings are owned by RebindableInputSystemComponent (BindingsRegistry.h).
  *
  */
 
 #include "RebindableInputComponent.h"
 #include <InputEventGroup.h>
+#include <BindingsRegistry.h>
 
 #include <AzCore/Asset/AssetSerializer.h>
-#include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Serialization/EditContext.h>
 #include <AzCore/Serialization/SerializeContext.h>
 
@@ -53,10 +54,7 @@ namespace RebindableInput
     {
     }
 
-    RebindableInputComponent::~RebindableInputComponent()
-    {
-        m_inputEventBindings.Cleanup();
-    }
+    RebindableInputComponent::~RebindableInputComponent() = default;
 
     void RebindableInputComponent::GetProvidedServices(AZ::ComponentDescriptor::DependencyArrayType& provided)
     {
@@ -142,9 +140,9 @@ namespace RebindableInput
     {
         StartingPointInput::InputConfigurationComponentRequestBus::Handler::BusDisconnect();
         AZ::Data::AssetBus::Handler::BusDisconnect();
-        if (m_localUserId != AzFramework::LocalUserIdNone)
+        if (BindingsRegistryRequests* registry = GetBindingsRegistry())
         {
-            m_inputEventBindings.Deactivate(m_localUserId);
+            registry->RemoveBindings(GetEntityId());
         }
     }
 
@@ -152,14 +150,11 @@ namespace RebindableInput
     {
         if (m_localUserId != localUserId)
         {
-            if (m_localUserId != AzFramework::LocalUserIdNone)
-            {
-                m_inputEventBindings.Deactivate(m_localUserId);
-            }
+            // Kept here as well: it is passed with SetBindings when the asset becomes ready.
             m_localUserId = localUserId;
-            if (m_localUserId != AzFramework::LocalUserIdNone)
+            if (BindingsRegistryRequests* registry = GetBindingsRegistry())
             {
-                m_inputEventBindings.Activate(m_localUserId);
+                registry->SetLocalUserId(GetEntityId(), m_localUserId);
             }
         }
     }
@@ -168,42 +163,31 @@ namespace RebindableInput
     {
         if (asset.GetId() == m_inputEventBindingsAsset.GetId())
         {
-            // before we reload and reapply, disable any existing old ones, or else they'd double up
-            // and you'd end up with both being active.
-            if (m_localUserId != AzFramework::LocalUserIdNone)
-            {
-                m_inputEventBindings.Deactivate(m_localUserId);
-            }
-
             m_inputEventBindingsAsset = asset;
             if (asset.IsReady())
             {
+                // SetBindings replaces the old bindings, so they do not double up.
                 OnAssetReady(asset);
+            }
+            else if (BindingsRegistryRequests* registry = GetBindingsRegistry())
+            {
+                // Like the original component: the old bindings are turned off until the new data is ready.
+                registry->RemoveBindings(GetEntityId());
             }
         }
     }
 
     void RebindableInputComponent::OnAssetReady(AZ::Data::Asset<AZ::Data::AssetData> asset)
     {
-        if (InputEventBindingsAsset* inputAsset = asset.GetAs<InputEventBindingsAsset>())
+        if (asset.GetAs<InputEventBindingsAsset>())
         {
-            // the input asset actually requires us to do additional cloning and copying of the data
-            // mainly because we retrieve the player profile data and apply it as a bindings patch on top of the data.
+            m_inputEventBindingsAsset = asset;
 
-            AZ::SerializeContext* serializeContext = nullptr;
-            AZ::ComponentApplicationBus::BroadcastResult(serializeContext, &AZ::ComponentApplicationRequests::GetSerializeContext);
-
-            if (serializeContext)
+            // The system component clones the bindings, activates them and owns the clone.
+            if (BindingsRegistryRequests* registry = GetBindingsRegistry())
             {
-                // we swap with a fresh empty one here just to make sure that if this happens repeatedly, we don't have anything left over.
-                InputEventBindings freshBindings;
-                serializeContext->CloneObjectInplace<InputEventBindings>(freshBindings, &inputAsset->m_bindings);
-                m_inputEventBindings.Cleanup();
-                m_inputEventBindings.Swap(&freshBindings);
+                registry->SetBindings(GetEntityId(), m_inputEventBindingsAsset, m_localUserId);
             }
-
-            m_isAssetPrepared = true;
-            ActivateBindingsIfAppropriate();
         }
         else
         {
@@ -211,15 +195,13 @@ namespace RebindableInput
         }
     }
 
-    void RebindableInputComponent::ActivateBindingsIfAppropriate()
+    BindingsRegistryRequests* RebindableInputComponent::GetBindingsRegistry() const
     {
-        if (m_isAssetPrepared)
-        {
-            if (m_localUserId != AzFramework::LocalUserIdNone)
-            {
-                m_inputEventBindings.Activate(m_localUserId);
-            }
-        }
+        BindingsRegistryRequests* registry = BindingsRegistryInterface::Get();
+        AZ_Error("RebindableInput", registry != nullptr,
+            "Entity %s: RebindableInputSystemComponent is not available, the input bindings of this entity do not work.",
+            GetEntityId().ToString().c_str());
+        return registry;
     }
 
     void RebindableInputComponent::EditorSetPrimaryAsset(const AZ::Data::AssetId& assetId)

@@ -7,7 +7,7 @@
  * Forked from Gems/StartingPointInput/Code/Source/InputConfigurationComponent.h (O3DE, tag 2605.0)
  * into the RebindableInput gem.
  * Changes: renamed to RebindableInputComponent, moved to the RebindableInput namespace, new type id,
- * no serialization version history (this is a new component).
+ * no serialization version history (this is a new component); the bindings are owned by RebindableInputSystemComponent.
  *
  */
 #pragma once
@@ -27,6 +27,8 @@ namespace AZ
 
 namespace RebindableInput
 {
+    class BindingsRegistryRequests;
+
     //! Binds raw input to named input events, like StartingPointInput's Input component,
     //! but loads the bindings from a .keybinds asset of this gem.
     //!
@@ -34,6 +36,9 @@ namespace RebindableInput
     //! The component provides "InputConfigurationService", like the original, so components that require
     //! that service keep working. It is incompatible with that service too, so it cannot be placed on the same
     //! entity as StartingPointInput's Input component (that would send every event twice).
+    //!
+    //! The component only holds the asset and the local user id. The bindings themselves are cloned, activated
+    //! and owned by RebindableInputSystemComponent; the component reports to it through BindingsRegistryInterface.
     class RebindableInputComponent
         : public AZ::Component
         , private AZ::Data::AssetBus::Handler
@@ -74,7 +79,8 @@ namespace RebindableInput
         void OnAssetReloaded(AZ::Data::Asset<AZ::Data::AssetData> asset) override;
         //////////////////////////////////////////////////////////////////////////
 
-        void ActivateBindingsIfAppropriate();
+        //! The system component that owns the bindings. Logs an error and returns nullptr if it is not available.
+        BindingsRegistryRequests* GetBindingsRegistry() const;
 
         //////////////////////////////////////////////////////////////////////////
         // Reflected Data
@@ -83,13 +89,7 @@ namespace RebindableInput
 
         //////////////////////////////////////////////////////////////////////////
         // Non Reflected Data
-        // A working copy of the bindings from the asset (cloned in OnAssetReady).
-        InputEventBindings m_inputEventBindings;
         AzFramework::LocalUserId m_localUserId = AzFramework::LocalUserIdAny;
-
-        // Unlike the definition of most assets, the input asset requires additional preparation after its loaded
-        // in order to actually be prepared to be used.
-        bool m_isAssetPrepared = false;
 
         AZ::Uuid m_uuid;
     };
