@@ -5,6 +5,7 @@
 #include <AzCore/std/containers/vector.h>
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzFramework/Asset/GenericAssetHandler.h>
+#include <InputHintsContract/InputHintsContractBus.h>
 #include <RebindableInput/RebindableInputBus.h>
 
 #include <BindingsRegistry.h>
@@ -14,10 +15,12 @@ namespace RebindableInput
 {
     //! Reflects the binding classes, registers the .keybinds asset type (like StartingPointInputSystemComponent
     //! does for .inputbindings) and owns the active input bindings of every entity with a RebindableInputComponent.
+    //! Implements InputHintsContract: tells UI which key is bound to an input action.
     class RebindableInputSystemComponent
         : public AZ::Component
         , protected RebindableInputRequestBus::Handler
         , private BindingsRegistryRequests
+        , private InputHintsContract::InputHintsContractRequestBus::Handler
     {
     public:
         AZ_COMPONENT_DECL(RebindableInputSystemComponent);
@@ -56,6 +59,11 @@ namespace RebindableInput
         void SetLocalUserId(AZ::EntityId entityId, AzFramework::LocalUserId localUserId) override;
         ////////////////////////////////////////////////////////////////////////
 
+        ////////////////////////////////////////////////////////////////////////
+        // InputHintsContract::InputHintsContractRequests
+        AZStd::optional<InputHintsContract::InputHint> GetInputHint(const AZStd::string& actionName) const override;
+        ////////////////////////////////////////////////////////////////////////
+
         //! The active bindings of one entity.
         struct EntityBindings
         {
@@ -72,6 +80,13 @@ namespace RebindableInput
 
         //! Deactivates the entry's bindings and frees its input handlers. The entry stays in the list, empty.
         static void ReleaseBindings(EntityBindings& entry);
+
+        //! Warns about actions of the entry that are also bound on another entity:
+        //! input hints show the bindings of the entity registered first.
+        void WarnAboutDuplicateActions(const EntityBindings& entry) const;
+
+        //! Tells UI to request its input hints again. Call at the very end of a change, when the state is complete.
+        static void NotifyInputHintsChanged();
 
         //! Loads and saves .keybinds files. Requires the asset manager ("AssetDatabaseService").
         AZStd::unique_ptr<AzFramework::GenericAssetHandler<InputEventBindingsAsset>> m_inputEventBindingsAssetHandler;

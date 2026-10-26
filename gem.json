@@ -25,7 +25,8 @@
     "requirements": "Requires StartingPointInput (its InputEventNotificationBus is used, so existing listeners keep working without changes) and InputHintsContract (implemented by this gem). Do not use StartingPointInput's Input component for the same actions on the same entity, or every event will be sent twice.",
     "documentation_url": "",
     "dependencies": [
-        "StartingPointInput"
+        "StartingPointInput",
+        "InputHintsContract"
     ],
     "repo_uri": "",
     "compatible_engines": [],

@@ -53,6 +53,8 @@ ly_add_target(
             # The input events are sent on StartingPointInput's InputEventNotificationBus,
             # and the component handles its InputConfigurationComponentRequestBus.
             Gem::StartingPointInput
+            # This gem implements InputHintsContract.
+            Gem::InputHintsContract.API
 )
 
 # Here add ${gem_name} target, it depends on the Private Object library and Public API interface

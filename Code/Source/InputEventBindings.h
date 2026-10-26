@@ -25,6 +25,9 @@ namespace RebindableInput
     */
     class InputEventBindings
     {
+        // The system component owns the active bindings and reads and changes them directly.
+        friend class RebindableInputSystemComponent;
+
     public:
         virtual ~InputEventBindings()
         {

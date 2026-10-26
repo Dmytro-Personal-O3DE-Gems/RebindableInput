@@ -26,6 +26,9 @@ namespace RebindableInput
     //////////////////////////////////////////////////////////////////////////
     class InputEventGroup
     {
+        // The system component owns the active bindings and reads and changes them directly.
+        friend class RebindableInputSystemComponent;
+
     public:
         AZ_RTTI(InputEventGroup, "{2119230A-FFFD-456B-AF0B-B71346C7B33B}");
         virtual ~InputEventGroup() = default;

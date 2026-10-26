@@ -54,6 +54,9 @@ namespace RebindableInput
         : public InputSubComponent
         , protected AzFramework::InputChannelEventListener
     {
+        // The system component owns the active bindings and reads and changes them directly.
+        friend class RebindableInputSystemComponent;
+
     public:
         InputEventMap();
         ~InputEventMap() override = default;
