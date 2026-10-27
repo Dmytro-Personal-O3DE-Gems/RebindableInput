@@ -7,6 +7,12 @@ set(FILES
     Source/RebindableInputComponent.cpp
     Source/RebindableInputComponent.h
     Source/BindingsRegistry.h
+    Source/RebindableInputConsoleCommands.cpp
+    Source/RebindableInputConsoleCommands.h
+    Source/InputChannelInfo.cpp
+    Source/InputChannelInfo.h
+    Source/InputChannelText.cpp
+    Source/InputChannelText.h
     Source/InputEventBindings.h
     Source/InputEventGroup.h
     Source/InputEventMap.cpp
