@@ -9,6 +9,8 @@ set(FILES
     Source/BindingsRegistry.h
     Source/RebindableInputConsoleCommands.cpp
     Source/RebindableInputConsoleCommands.h
+    Source/InputCapture.cpp
+    Source/InputCapture.h
     Source/InputChannelInfo.cpp
     Source/InputChannelInfo.h
     Source/InputChannelText.cpp
@@ -17,4 +19,8 @@ set(FILES
     Source/InputEventGroup.h
     Source/InputEventMap.cpp
     Source/InputEventMap.h
+    Source/PlayerBindingsFile.cpp
+    Source/PlayerBindingsFile.h
+    Source/PlayerBindingsStorage.cpp
+    Source/PlayerBindingsStorage.h
 )

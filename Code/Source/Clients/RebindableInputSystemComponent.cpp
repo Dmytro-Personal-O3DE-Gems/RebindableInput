@@ -3,6 +3,7 @@
 
 #include <RebindableInput/RebindableInputTypeIds.h>
 
+#include <InputCapture.h>
 #include <InputChannelInfo.h>
 #include <InputChannelText.h>
 #include <InputEventGroup.h>
@@ -17,7 +18,9 @@
 #include <AzCore/std/algorithm.h>
 #include <AzFramework/Input/Devices/Keyboard/InputDeviceKeyboard.h>
 #include <AzFramework/Input/Devices/Mouse/InputDeviceMouse.h>
+#include <AzCore/std/smart_ptr/weak_ptr.h>
 #include <InputHintsContract/InputHintsContractNotificationBus.h>
+#include <RebindableInput/RebindableInputNotificationBus.h>
 
 namespace RebindableInput
 {
@@ -33,6 +36,8 @@ namespace RebindableInput
         InputEventGroup::Reflect(context);
         InputEventMap::Reflect(context);
         ThumbstickInputEventMap::Reflect(context);
+        // The player's file is JSON written from these structs.
+        PlayerBindingsFile::Reflect(context);
 
         // StartingPointInputSystemComponent::Reflect also reflects InputEventNotificationId and
         // InputEventNotificationBus for scripts. That is not repeated here: both belong to StartingPointInput,
@@ -63,8 +68,11 @@ namespace RebindableInput
         required.push_back(AZ_CRC_CE("AssetCatalogService"));
     }
 
-    void RebindableInputSystemComponent::GetDependentServices([[maybe_unused]] AZ::ComponentDescriptor::DependencyArrayType& dependent)
+    void RebindableInputSystemComponent::GetDependentServices(AZ::ComponentDescriptor::DependencyArrayType& dependent)
     {
+        // The player's file is loaded in Activate. SaveData connects to its bus in its own Activate, so it must come first
+        // where it exists. Dependent, not required: SaveData runs only in game launchers, the Editor works without it.
+        dependent.push_back(AZ_CRC_CE("SaveDataService"));
     }
 
     RebindableInputSystemComponent::RebindableInputSystemComponent()
@@ -110,9 +118,16 @@ namespace RebindableInput
         AZ_Error("RebindableInput", hintsOutcome.IsSuccess(),
             "Failed to register as the InputHintsContract implementation: %s", hintsOutcome.GetError().c_str());
 
+        // The player's file: after everything above, because the answer rebuilds the bindings and notifies UI.
+        // With SaveData the answer comes later; the guard drops it if this component is deactivated before.
+        m_callbackGuard = AZStd::make_shared<int>(0);
+        LoadPlayerBindings();
+
+        m_inputCapture = AZStd::make_unique<InputCapture>();
+
 #if defined(AZ_ENABLE_TRACING)
         // After the rebinding API is ready: the commands only call it.
-        // Only with tracing: the commands print through AZ_Printf, which release builds compile out.
+        // Only in builds with tracing (debug, profile): debug commands that change the bindings are not for players.
         m_consoleCommands = AZStd::make_unique<RebindableInputConsoleCommands>();
 #endif
     }
@@ -121,6 +136,16 @@ namespace RebindableInput
     {
         // Unregistered from the console by ConsoleFunctorBase's destructor.
         m_consoleCommands.reset();
+
+        // Stops listening to input; a capture in progress ends without a notification.
+        m_inputCapture.reset();
+
+        // Answers of the storage that arrive from now on are ignored. The player's state is loaded again on the next Activate.
+        m_callbackGuard.reset();
+        m_loadingPlayerBindings = false;
+        m_overrides.clear();
+        m_savedOverrides.clear();
+        m_knownDefaults.clear();
 
         // First: nobody can ask for hints or add bindings while the rest is being shut down.
         if (InputHintsContract::InputHintsContractInterface::Get() == this)
@@ -221,7 +246,7 @@ namespace RebindableInput
     ////////////////////////////////////////////////////////////////////////
     // Building the bindings
 
-    void RebindableInputSystemComponent::BuildBindings(EntityBindings& entry, bool warn)
+    void RebindableInputSystemComponent::BuildBindings(EntityBindings& entry, bool registering)
     {
         const InputEventBindingsAsset* inputAsset = entry.m_asset.Get();
         if (!inputAsset)
@@ -246,11 +271,27 @@ namespace RebindableInput
 
         // Slots and the player's changes are applied to the clone before it is activated.
         entry.m_actions.clear();
+        AZStd::vector<SlotRecord> resolvedConflicts;
         for (InputEventGroup& group : entry.m_bindings.m_inputEventGroups)
         {
             ActionSlots& action = entry.m_actions.emplace_back();
             action.m_actionName = group.m_eventName;
-            ApplySlots(group, action, *serializeContext, entry.m_entityId, warn);
+            ApplySlots(group, action, *serializeContext, entry.m_entityId, registering, resolvedConflicts);
+        }
+
+        if (registering)
+        {
+            // A resolved conflict becomes a change of the player, also in the saved state: RevertBindings must not
+            // bring the conflict back, and after the defaults are remembered below, the next save keeps the slot empty.
+            for (const SlotRecord& conflict : resolvedConflicts)
+            {
+                m_overrides.push_back(conflict);
+                m_savedOverrides.push_back(conflict);
+            }
+            for (const ActionSlots& action : entry.m_actions)
+            {
+                RememberDefaults(action);
+            }
         }
 
         if (entry.m_localUserId != AzFramework::LocalUserIdNone)
@@ -261,7 +302,7 @@ namespace RebindableInput
 
     void RebindableInputSystemComponent::ApplySlots(
         InputEventGroup& group, ActionSlots& action, AZ::SerializeContext& serializeContext,
-        [[maybe_unused]] AZ::EntityId entityId, [[maybe_unused]] bool warn) const
+        [[maybe_unused]] AZ::EntityId entityId, bool registering, AZStd::vector<SlotRecord>& resolvedConflicts) const
     {
         // 1. Sort the handlers into slots: the first two of each device group, in file order.
         //    Handlers of other devices (or of unknown types) are not slot-managed and stay as they are.
@@ -289,7 +330,7 @@ namespace RebindableInput
             else
             {
                 // Only a primary and an alternate key: a third binding could not be seen or changed in a settings menu.
-                AZ_Warning("RebindableInput", !warn,
+                AZ_Warning("RebindableInput", !registering,
                     "Entity %s, input action '%s': more than %zu bindings for one device group, '%s' is disabled. "
                     "Only the first two (primary and alternate) are used.",
                     entityId.ToString().c_str(), group.m_eventName.c_str(), BindingSlotCount, inputEventMap->m_inputName.c_str());
@@ -299,15 +340,66 @@ namespace RebindableInput
 
         // 2. The player's changes on top of the defaults.
         action.m_channels = action.m_defaultChannels;
-        for (const PlayerOverride& change : m_overrides)
+        AZStd::array<AZStd::array<bool, BindingSlotCount>, DeviceGroupCount> changedByPlayer{};
+        for (const SlotRecord& change : m_overrides)
         {
-            if (change.m_actionName == action.m_actionName)
+            if (change.m_actionName != action.m_actionName)
             {
-                action.m_channels[static_cast<size_t>(change.m_group)][static_cast<size_t>(change.m_slot)] = change.m_channelName;
+                continue;
+            }
+            // SetBinding checks a change before storing it. A change from the player's file is checked here, where the
+            // action is known: the action may expect another kind of channel since the player saved (a game update).
+            if (!change.m_channelName.empty() && !AcceptsChannel(action, change.m_group, change.m_channelName))
+            {
+                AZ_Warning("RebindableInput", !registering,
+                    "Input action '%s': the player's '%s' (%s %s) does not fit the action any more, the default is used.",
+                    action.m_actionName.c_str(), change.m_channelName.c_str(),
+                    PlayerBindingsFile::ToString(change.m_group), PlayerBindingsFile::ToString(change.m_slot));
+                continue;
+            }
+            const size_t g = static_cast<size_t>(change.m_group);
+            const size_t s = static_cast<size_t>(change.m_slot);
+            action.m_channels[g][s] = change.m_channelName;
+            changedByPlayer[g][s] = true;
+        }
+
+        // 3. A default that is new to the player (a game update, a new action, a reloaded asset) and uses a key the player
+        //    took for another slot: the player's choice wins, the default slot is emptied.
+        //    Only when registering: after the player's own changes in this session the defaults are already known, and a
+        //    duplicate is then intended (ConflictMode::AllowDuplicate).
+        if (registering)
+        {
+            for (size_t g = 0; g < DeviceGroupCount; ++g)
+            {
+                for (size_t s = 0; s < BindingSlotCount; ++s)
+                {
+                    const AZStd::string& defaultChannel = action.m_defaultChannels[g][s];
+                    if (changedByPlayer[g][s] || defaultChannel.empty())
+                    {
+                        continue;
+                    }
+                    const DeviceGroup deviceGroup = static_cast<DeviceGroup>(g);
+                    const BindingSlot slot = static_cast<BindingSlot>(s);
+                    const AZStd::string* knownDefault = FindKnownDefault(action.m_actionName, deviceGroup, slot);
+                    if (knownDefault && *knownDefault == defaultChannel)
+                    {
+                        continue; // the player has seen this default: a duplicate with it is the player's choice
+                    }
+                    if (IsTakenByPlayer(deviceGroup, defaultChannel))
+                    {
+                        AZ_Warning("RebindableInput", false,
+                            "Input action '%s': the default '%s' (%s %s) is new, but the player uses this key for another slot. "
+                            "The player's choice wins: the slot is left empty.",
+                            action.m_actionName.c_str(), defaultChannel.c_str(),
+                            PlayerBindingsFile::ToString(deviceGroup), PlayerBindingsFile::ToString(slot));
+                        action.m_channels[g][s].clear();
+                        resolvedConflicts.push_back({ action.m_actionName, deviceGroup, slot, AZStd::string() });
+                    }
+                }
             }
         }
 
-        // 3. Make the handlers match the slots.
+        // 4. Make the handlers match the slots.
         for (size_t g = 0; g < DeviceGroupCount; ++g)
         {
             for (size_t s = 0; s < BindingSlotCount; ++s)
@@ -373,7 +465,7 @@ namespace RebindableInput
             }
         }
 
-        // 4. Put the handlers back: primary and alternate of each device group, then the rest.
+        // 5. Put the handlers back: primary and alternate of each device group, then the rest.
         group.m_inputHandlers.clear();
         for (const auto& groupSlots : slots)
         {
@@ -388,19 +480,86 @@ namespace RebindableInput
         group.m_inputHandlers.insert(group.m_inputHandlers.end(), otherHandlers.begin(), otherHandlers.end());
     }
 
-    void RebindableInputSystemComponent::RebuildAllBindings()
+    void RebindableInputSystemComponent::RebuildAllBindings(bool registering)
     {
         for (AZStd::unique_ptr<EntityBindings>& entry : m_entityBindings)
         {
             ReleaseBindings(*entry);
-            BuildBindings(*entry, false);
+            BuildBindings(*entry, registering);
+        }
+    }
+
+    AZStd::optional<ChannelKind> RebindableInputSystemComponent::GetExpectedKind(const ActionSlots& action, DeviceGroup group)
+    {
+        const size_t g = static_cast<size_t>(group);
+        for (const AZStd::string& defaultChannel : action.m_defaultChannels[g])
+        {
+            if (const AZStd::optional<ChannelInfo> defaultInfo = InputChannelInfo::Find(defaultChannel))
+            {
+                return defaultInfo->m_kind;
+            }
+        }
+        for (const AZStd::string& otherDefault : action.m_defaultChannels[(g + 1) % DeviceGroupCount])
+        {
+            if (const AZStd::optional<ChannelInfo> otherInfo = InputChannelInfo::Find(otherDefault);
+                otherInfo && otherInfo->m_kind != ChannelKind::Button)
+            {
+                return AZStd::nullopt;
+            }
+        }
+        return ChannelKind::Button;
+    }
+
+    bool RebindableInputSystemComponent::AcceptsChannel(const ActionSlots& action, DeviceGroup group, const AZStd::string& channelName)
+    {
+        const AZStd::optional<ChannelInfo> info = InputChannelInfo::Find(channelName);
+        if (!info || info->m_deviceGroup != group || InputCapture::IsReservedChannel(channelName))
+        {
+            return false;
+        }
+        const AZStd::optional<ChannelKind> expectedKind = GetExpectedKind(action, group);
+        return expectedKind && info->m_kind == *expectedKind;
+    }
+
+    bool RebindableInputSystemComponent::IsTakenByPlayer(DeviceGroup group, const AZStd::string& channelName) const
+    {
+        return AZStd::any_of(m_overrides.begin(), m_overrides.end(), [&](const SlotRecord& change)
+        {
+            return change.m_group == group && change.m_channelName == channelName;
+        });
+    }
+
+    const AZStd::string* RebindableInputSystemComponent::FindKnownDefault(
+        const AZStd::string& actionName, DeviceGroup group, BindingSlot slot) const
+    {
+        for (const SlotRecord& known : m_knownDefaults)
+        {
+            if (known.m_actionName == actionName && known.m_group == group && known.m_slot == slot)
+            {
+                return &known.m_channelName;
+            }
+        }
+        return nullptr;
+    }
+
+    void RebindableInputSystemComponent::RememberDefaults(const ActionSlots& action)
+    {
+        AZStd::erase_if(m_knownDefaults, [&](const SlotRecord& known) { return known.m_actionName == action.m_actionName; });
+        for (size_t g = 0; g < DeviceGroupCount; ++g)
+        {
+            for (size_t s = 0; s < BindingSlotCount; ++s)
+            {
+                // Empty defaults too: a key that later appears in an empty slot is new to the player.
+                m_knownDefaults.push_back({ action.m_actionName, static_cast<DeviceGroup>(g), static_cast<BindingSlot>(s),
+                    action.m_defaultChannels[g][s] });
+            }
         }
     }
 
     void RebindableInputSystemComponent::SetOverride(
         const AZStd::string& actionName, DeviceGroup group, BindingSlot slot, const AZStd::string& channelName)
     {
-        AZStd::erase_if(m_overrides, [&](const PlayerOverride& change)
+        AZStd::erase_if(m_overrides, [&](const SlotRecord& change)
         {
             return change.m_actionName == actionName && change.m_group == group && change.m_slot == slot;
         });
@@ -491,38 +650,22 @@ namespace RebindableInput
         {
             return SetBindingResult::UnknownChannel;
         }
+        if (InputCapture::IsReservedChannel(channelName))
+        {
+            return SetBindingResult::ReservedChannel;
+        }
         if (info->m_deviceGroup != group)
         {
             return SetBindingResult::WrongDeviceGroup;
         }
 
-        // The kind the action expects: from its defaults in this device group. Without defaults there, a button
-        // action in the other group allows buttons here; an axis action cannot be moved to another device.
-        const size_t g = static_cast<size_t>(group);
-        AZStd::optional<ChannelKind> expectedKind;
-        for (const AZStd::string& defaultChannel : action->m_defaultChannels[g])
-        {
-            if (const AZStd::optional<ChannelInfo> defaultInfo = InputChannelInfo::Find(defaultChannel); defaultInfo && !expectedKind)
-            {
-                expectedKind = defaultInfo->m_kind;
-            }
-        }
-        if (!expectedKind)
-        {
-            expectedKind = ChannelKind::Button;
-            for (const AZStd::string& otherDefault : action->m_defaultChannels[(g + 1) % DeviceGroupCount])
-            {
-                if (const AZStd::optional<ChannelInfo> otherInfo = InputChannelInfo::Find(otherDefault);
-                    otherInfo && otherInfo->m_kind != ChannelKind::Button)
-                {
-                    return SetBindingResult::WrongChannelKind;
-                }
-            }
-        }
-        if (info->m_kind != *expectedKind)
+        const AZStd::optional<ChannelKind> expectedKind = GetExpectedKind(*action, group);
+        if (!expectedKind || info->m_kind != *expectedKind)
         {
             return SetBindingResult::WrongChannelKind;
         }
+
+        const size_t g = static_cast<size_t>(group);
 
         if (mode == ConflictMode::Move)
         {
@@ -567,7 +710,7 @@ namespace RebindableInput
 
     void RebindableInputSystemComponent::ResetAction(const AZStd::string& actionName)
     {
-        AZStd::erase_if(m_overrides, [&](const PlayerOverride& change) { return change.m_actionName == actionName; });
+        AZStd::erase_if(m_overrides, [&](const SlotRecord& change) { return change.m_actionName == actionName; });
         RebuildAllBindings();
         NotifyInputHintsChanged();
     }
@@ -577,6 +720,150 @@ namespace RebindableInput
         m_overrides.clear();
         RebuildAllBindings();
         NotifyInputHintsChanged();
+    }
+
+    void RebindableInputSystemComponent::SaveBindings()
+    {
+        if (m_loadingPlayerBindings)
+        {
+            // Saving now would overwrite the file with the defaults before the player's changes arrive.
+            AZ_Warning("RebindableInput", false, "SaveBindings: the player's bindings are still being loaded, nothing is saved.");
+            NotifyBindingsSaved(false);
+            return;
+        }
+
+        PlayerBindingsData data;
+        data.m_overrides = m_overrides;
+        data.m_defaults = m_knownDefaults;
+        AZ::Outcome<AZStd::string, AZStd::string> json = PlayerBindingsFile::ToJson(data);
+        if (!json.IsSuccess())
+        {
+            AZ_Error("RebindableInput", false, "SaveBindings: cannot write the player's bindings as JSON: %s", json.GetError().c_str());
+            NotifyBindingsSaved(false);
+            return;
+        }
+
+        // The changes as they are now: if the player changes more before SaveData answers, Revert returns to these.
+        AZStd::weak_ptr<int> guard = m_callbackGuard;
+        PlayerBindingsStorage::Save(json.TakeValue(), [this, guard, saved = AZStd::move(data.m_overrides)](bool success)
+        {
+            if (success && !guard.expired())
+            {
+                m_savedOverrides = saved;
+            }
+            if (success)
+            {
+                AZ_TracePrintf("RebindableInput", "Saved the player's bindings (%zu changes) to %s.\n",
+                    saved.size(), PlayerBindingsStorage::GetLocation().c_str());
+            }
+            else
+            {
+                AZ_Warning("RebindableInput", false, "Cannot save the player's bindings to %s.", PlayerBindingsStorage::GetLocation().c_str());
+            }
+            NotifyBindingsSaved(success);
+        });
+    }
+
+    void RebindableInputSystemComponent::RevertBindings()
+    {
+        m_overrides = m_savedOverrides;
+        RebuildAllBindings();
+        NotifyInputHintsChanged();
+    }
+
+    bool RebindableInputSystemComponent::StartCapture(const AZStd::string& actionName, DeviceGroup group, BindingSlot slot)
+    {
+        const ActionSlots* action = FindActionSlots(actionName);
+        if (!action || !m_inputCapture)
+        {
+            return false;
+        }
+        // Only the kind the slot accepts is taken: mouse movement must not end a capture for a button action.
+        const AZStd::optional<ChannelKind> kind = GetExpectedKind(*action, group);
+        if (!kind)
+        {
+            return false;
+        }
+        m_inputCapture->Start(actionName, group, slot, *kind);
+        return true;
+    }
+
+    void RebindableInputSystemComponent::CancelCapture()
+    {
+        if (m_inputCapture)
+        {
+            m_inputCapture->Cancel();
+        }
+    }
+
+    bool RebindableInputSystemComponent::IsCapturing() const
+    {
+        return m_inputCapture && m_inputCapture->IsCapturing();
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    // The player's file
+
+    void RebindableInputSystemComponent::LoadPlayerBindings()
+    {
+        m_loadingPlayerBindings = true;
+        AZStd::weak_ptr<int> guard = m_callbackGuard;
+        PlayerBindingsStorage::Load([this, guard](PlayerBindingsStorage::LoadResult result, AZStd::string text)
+        {
+            if (!guard.expired())
+            {
+                OnPlayerBindingsLoaded(result, text);
+            }
+        });
+    }
+
+    void RebindableInputSystemComponent::OnPlayerBindingsLoaded(PlayerBindingsStorage::LoadResult result, const AZStd::string& text)
+    {
+        m_loadingPlayerBindings = false;
+
+        if (result == PlayerBindingsStorage::LoadResult::NotFound)
+        {
+            AZ_TracePrintf("RebindableInput", "No saved player bindings yet (%s): the defaults are used.\n",
+                PlayerBindingsStorage::GetLocation().c_str());
+            return;
+        }
+        if (result == PlayerBindingsStorage::LoadResult::Failed)
+        {
+            AZ_Warning("RebindableInput", false, "Cannot read the player's bindings (%s): the defaults are used.",
+                PlayerBindingsStorage::GetLocation().c_str());
+            return;
+        }
+
+        AZStd::vector<AZStd::string> warnings;
+        AZ::Outcome<PlayerBindingsData, AZStd::string> data = PlayerBindingsFile::FromJson(text, warnings);
+    #if defined(AZ_ENABLE_TRACING)
+        for (const AZStd::string& warning : warnings)
+        {
+            AZ_Warning("RebindableInput", false, "Player's bindings (%s): %s", PlayerBindingsStorage::GetLocation().c_str(), warning.c_str());
+        }
+    #endif // AZ_ENABLE_TRACING
+        if (!data.IsSuccess())
+        {
+            AZ_Warning("RebindableInput", false,
+                "The player's bindings (%s) are not a valid bindings file: %s. The defaults are used; the next save replaces the file.",
+                PlayerBindingsStorage::GetLocation().c_str(), data.GetError().c_str());
+            return;
+        }
+
+        PlayerBindingsData loaded = data.TakeValue();
+        m_overrides = AZStd::move(loaded.m_overrides);
+        m_savedOverrides = m_overrides;
+        m_knownDefaults = AZStd::move(loaded.m_defaults);
+        AZ_TracePrintf("RebindableInput", "Loaded the player's bindings (%zu changes) from %s.\n",
+            m_overrides.size(), PlayerBindingsStorage::GetLocation().c_str());
+
+        // Entities that registered before the file arrived (SaveData answers later) get the player's changes now.
+        // As registration: their defaults are compared with the ones from the file.
+        if (!m_entityBindings.empty())
+        {
+            RebuildAllBindings(true);
+            NotifyInputHintsChanged();
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////
@@ -686,6 +973,11 @@ namespace RebindableInput
     {
         InputHintsContract::InputHintsContractNotificationBus::Broadcast(
             &InputHintsContract::InputHintsContractNotifications::OnInputHintsChanged);
+    }
+
+    void RebindableInputSystemComponent::NotifyBindingsSaved(bool success)
+    {
+        RebindableInputNotificationBus::Broadcast(&RebindableInputNotifications::OnBindingsSaved, success);
     }
 
     void RebindableInputSystemComponent::ReleaseBindings(EntityBindings& entry)

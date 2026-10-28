@@ -3,6 +3,7 @@
 
 #include <RebindableInput/RebindableInputBus.h>
 
+#include <AzCore/Console/ConsoleTypeHelpers.h>
 #include <AzCore/Debug/Trace.h>
 #include <AzCore/StringFunc/StringFunc.h>
 #include <AzCore/std/algorithm.h>
@@ -86,6 +87,8 @@ namespace RebindableInput
                 return "the channel belongs to the other device group";
             case SetBindingResult::WrongChannelKind:
                 return "the channel is of another kind than the action expects (button, mouse axis or stick)";
+            case SetBindingResult::ReservedChannel:
+                return "Escape and gamepad Start are reserved: they cancel a capture";
             }
             return "unknown result";
         }
@@ -300,6 +303,69 @@ namespace RebindableInput
             api->ResetAction(actionName);
             PrintAction(*api, actionName);
         }
+
+        void RebindSave(const AZ::ConsoleCommandContainer& arguments)
+        {
+            if (!arguments.empty())
+            {
+                AZ_Printf(Window, "Usage: rebind_save\n");
+                return;
+            }
+            if (RebindableInputRequests* api = GetApi())
+            {
+                // The result is logged by the system component when the storage answers.
+                api->SaveBindings();
+            }
+        }
+
+        void RebindRevert(const AZ::ConsoleCommandContainer& arguments)
+        {
+            if (!arguments.empty())
+            {
+                AZ_Printf(Window, "Usage: rebind_revert\n");
+                return;
+            }
+            if (RebindableInputRequests* api = GetApi())
+            {
+                api->RevertBindings();
+                AZ_Printf(Window, "Back to the last saved or loaded bindings.\n");
+                RebindList(AZ::ConsoleCommandContainer{});
+            }
+        }
+
+        RebindableInputConsoleCommands* s_instance = nullptr;
+
+        constexpr const char* CaptureUsage =
+            "rebind_capture <action> <KeyboardMouse|km|Gamepad|gp> <Primary|p|Alternate|a> [delay seconds, 0 by default]";
+
+        //! ImGui's default key to show and hide its console (ImGuiManager.cpp).
+        constexpr AZStd::string_view ImGuiConsoleKey = "keyboard_key_navigation_home";
+
+        void RebindCapture(const AZ::ConsoleCommandContainer& arguments)
+        {
+            if (arguments.size() != 3 && arguments.size() != 4)
+            {
+                AZ_Printf(Window, "Usage: %s\n", CaptureUsage);
+                return;
+            }
+            const AZStd::optional<SlotAddress> address = ParseSlotAddress(arguments, CaptureUsage);
+            if (!address)
+            {
+                return;
+            }
+            float delaySeconds = 0.0f;
+            if (arguments.size() == 4 && !AZ::ConsoleTypeHelpers::StringToValue(delaySeconds, arguments[3]))
+            {
+                AZ_Printf(Window, "'%.*s' is not a number. Usage: %s\n", AZ_STRING_ARG(arguments[3]), CaptureUsage);
+                return;
+            }
+            if (RebindableInputConsoleCommands* commands = RebindableInputConsoleCommands::GetInstance())
+            {
+                commands->ScheduleCapture(address->m_actionName, address->m_group, address->m_slot, delaySeconds);
+                AZ_Printf(Window, "Capture for '%s': close ImGui with Home, then press the key. Escape cancels "
+                    "(in the Editor, Escape leaves Game Mode first).\n", address->m_actionName.c_str());
+            }
+        }
     } // namespace
 
     RebindableInputConsoleCommands::RebindableInputConsoleCommands()
@@ -312,7 +378,116 @@ namespace RebindableInput
             CommandFlags, AZ::TypeId::CreateNull(), &RebindClear)
         , m_reset("rebind_reset", "Returns one input action or all of them to the defaults: rebind_reset [action]",
             CommandFlags, AZ::TypeId::CreateNull(), &RebindReset)
+        , m_save("rebind_save", "Writes the player's changes to the player's bindings file",
+            CommandFlags, AZ::TypeId::CreateNull(), &RebindSave)
+        , m_revert("rebind_revert", "Returns to the player's changes of the last save or load",
+            CommandFlags, AZ::TypeId::CreateNull(), &RebindRevert)
+        , m_capture("rebind_capture", "Waits for the next key and binds it to a slot. Usage: rebind_capture <action> <group> <slot> [delay]",
+            CommandFlags, AZ::TypeId::CreateNull(), &RebindCapture)
     {
+        s_instance = this;
+        RebindableInputNotificationBus::Handler::BusConnect();
+    }
+
+    RebindableInputConsoleCommands::~RebindableInputConsoleCommands()
+    {
+        // The bus handlers disconnect in their own destructors.
+        s_instance = nullptr;
+    }
+
+    RebindableInputConsoleCommands* RebindableInputConsoleCommands::GetInstance()
+    {
+        return s_instance;
+    }
+
+    void RebindableInputConsoleCommands::ScheduleCapture(
+        const AZStd::string& actionName, DeviceGroup group, BindingSlot slot, float delaySeconds)
+    {
+        m_pendingCapture = PendingCapture{ actionName, group, slot };
+        m_secondsLeft = delaySeconds;
+        AZ::TickBus::Handler::BusConnect();
+    }
+
+    void RebindableInputConsoleCommands::OnTick(float deltaTime, [[maybe_unused]] AZ::ScriptTimePoint time)
+    {
+        m_secondsLeft -= deltaTime;
+        if (m_secondsLeft > 0.0f || !m_pendingCapture)
+        {
+            return;
+        }
+        AZ::TickBus::Handler::BusDisconnect();
+        const PendingCapture pending = *m_pendingCapture;
+        m_pendingCapture.reset();
+
+        RebindableInputRequests* api = GetApi();
+        if (!api)
+        {
+            return;
+        }
+        if (!api->StartCapture(pending.m_actionName, pending.m_group, pending.m_slot))
+        {
+            AZ_Printf(Window, "Cannot capture for '%s': unknown action, or the slot accepts no channel.\n", pending.m_actionName.c_str());
+            return;
+        }
+        // Set after StartCapture: it may cancel an older capture of this console, whose notification comes during the call.
+        m_captureStartedHere = true;
+        AZ_Printf(Window, "Press a key for '%s' (%s %s). Escape cancels.\n", pending.m_actionName.c_str(),
+            pending.m_group == DeviceGroup::Gamepad ? "Gamepad" : "KeyboardMouse", ToString(pending.m_slot));
+    }
+
+    void RebindableInputConsoleCommands::OnChannelCaptured(
+        const AZStd::string& actionName, DeviceGroup group, BindingSlot slot, const AZStd::string& channelName)
+    {
+        if (!m_captureStartedHere)
+        {
+            return; // a capture of a menu, not of this console
+        }
+        m_captureStartedHere = false;
+
+        RebindableInputRequests* api = GetApi();
+        if (!api)
+        {
+            return;
+        }
+
+        if (channelName == ImGuiConsoleKey)
+        {
+            // Home hid ImGui (ImGui lets it through): not the player's choice, wait for the next key.
+            // The held Home stays swallowed until it is released, and the new capture starts with the next frame.
+            m_captureStartedHere = api->StartCapture(actionName, group, slot);
+            return;
+        }
+
+        AZ_Printf(Window, "Captured '%s'.\n", channelName.c_str());
+
+        // What a settings menu does after the key arrives: ask about a conflict (here: always move), then bind.
+        const AZStd::optional<BindingConflict> conflict = api->FindConflict(actionName, group, slot, channelName);
+        const SetBindingResult result = api->SetBinding(actionName, group, slot, channelName, ConflictMode::Move);
+        if (result != SetBindingResult::Ok)
+        {
+            AZ_Printf(Window, "Not changed: %s.\n", ToString(result));
+            return;
+        }
+        if (conflict)
+        {
+            AZ_Printf(Window, "Moved from %s %s (that slot is empty now).\n", conflict->m_actionName.c_str(), ToString(conflict->m_slot));
+            PrintAction(*api, conflict->m_actionName);
+        }
+        if (!conflict || conflict->m_actionName != actionName)
+        {
+            PrintAction(*api, actionName);
+        }
+    }
+
+    void RebindableInputConsoleCommands::OnCaptureCancelled(
+        const AZStd::string& actionName, [[maybe_unused]] DeviceGroup group, [[maybe_unused]] BindingSlot slot)
+    {
+        if (!m_captureStartedHere)
+        {
+            return;
+        }
+        m_captureStartedHere = false;
+        AZ_Printf(Window, "Capture for '%s' cancelled.\n", actionName.c_str());
     }
 
 } // namespace RebindableInput

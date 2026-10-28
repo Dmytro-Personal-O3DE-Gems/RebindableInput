@@ -22,11 +22,12 @@
         "Linux"
     ],
     "icon_path": "",
-    "requirements": "Requires StartingPointInput (its InputEventNotificationBus is used, so existing listeners keep working without changes) and InputHintsContract (implemented by this gem). Do not use StartingPointInput's Input component for the same actions on the same entity, or every event will be sent twice.",
+    "requirements": "Requires StartingPointInput (its InputEventNotificationBus is used, so existing listeners keep working without changes) and InputHintsContract (implemented by this gem). Uses SaveData to store the player's bindings in release builds. Do not use StartingPointInput's Input component for the same actions on the same entity, or every event will be sent twice.",
     "documentation_url": "",
     "dependencies": [
         "StartingPointInput",
-        "InputHintsContract"
+        "InputHintsContract",
+        "SaveData"
     ],
     "repo_uri": "",
     "compatible_engines": [],

@@ -59,13 +59,15 @@ namespace RebindableInput
         UnknownChannel,   //!< not a keyboard, mouse or gamepad channel of the engine
         WrongDeviceGroup, //!< e.g. a gamepad button for a keyboard and mouse slot
         WrongChannelKind, //!< e.g. a key for an action that expects mouse movement
+        ReservedChannel,  //!< Escape and gamepad Start: they cancel StartCapture and stay with the menus
     };
 
     //! Rebinding API for game code, e.g. a settings menu.
     //!
     //! The player's changes are stored as differences from the defaults in the .keybinds assets and apply
     //! to every entity that has the action. Changes take effect at once and send
-    //! InputHintsContractNotifications::OnInputHintsChanged.
+    //! InputHintsContractNotifications::OnInputHintsChanged, but they are written to the player's file
+    //! only by SaveBindings. The file is loaded when the gem starts.
     //! Implemented by RebindableInputSystemComponent; reachable through RebindableInputInterface and RebindableInputRequestBus.
     class RebindableInputRequests
     {
@@ -98,6 +100,30 @@ namespace RebindableInput
 
         //! Returns all actions to the defaults.
         virtual void ResetAll() = 0;
+
+        //! Writes the player's changes to the player's file, e.g. for "Apply" in a settings menu.
+        //! Asynchronous: the result comes as RebindableInputNotifications::OnBindingsSaved, on the main thread,
+        //! possibly already during this call. Where the file is depends on the setting "/RebindableInput/Storage"
+        //! ("ProjectUser" or "SaveData"; by default "SaveData" in release builds and "ProjectUser" otherwise).
+        virtual void SaveBindings() = 0;
+
+        //! Returns to the player's changes of the last successful save or load, e.g. for "Cancel" in a settings menu.
+        virtual void RevertBindings() = 0;
+
+        //! Waits for the player's next key for a slot ("press a key" in a settings menu). Nothing is bound: the key is
+        //! reported as RebindableInputNotifications::OnChannelCaptured, and the menu checks FindConflict and calls SetBinding.
+        //! - Starts with the next frame, so the key that started it (e.g. Enter on a menu button) is not taken.
+        //! - Only a channel of the slot's device group and of the kind the action expects is taken (a button for a button
+        //!   action; analog channels past half way). Until then, all input is swallowed: above UI, below ImGui.
+        //! - The taken key stays swallowed until it is released, so the new binding does not fire at once.
+        //! - Escape or gamepad Start cancels (OnCaptureCancelled). A capture in progress is cancelled by a new one.
+        //! Returns false for an unknown action or a slot that accepts no channel.
+        virtual bool StartCapture(const AZStd::string& actionName, DeviceGroup group, BindingSlot slot) = 0;
+
+        //! Stops waiting for a key and sends OnCaptureCancelled; nothing happens if no capture is in progress.
+        virtual void CancelCapture() = 0;
+
+        virtual bool IsCapturing() const = 0;
     };
 
     class RebindableInputBusTraits

@@ -4,13 +4,17 @@
 #include <AzCore/Component/Component.h>
 #include <AzCore/std/containers/array.h>
 #include <AzCore/std/containers/vector.h>
+#include <AzCore/std/smart_ptr/shared_ptr.h>
 #include <AzCore/std/smart_ptr/unique_ptr.h>
 #include <AzFramework/Asset/GenericAssetHandler.h>
 #include <InputHintsContract/InputHintsContractBus.h>
 #include <RebindableInput/RebindableInputBus.h>
 
 #include <BindingsRegistry.h>
+#include <InputChannelInfo.h>
 #include <InputEventBindings.h>
+#include <PlayerBindingsFile.h>
+#include <PlayerBindingsStorage.h>
 
 namespace AZ
 {
@@ -19,6 +23,7 @@ namespace AZ
 
 namespace RebindableInput
 {
+    class InputCapture;
     class InputEventMap;
     class RebindableInputConsoleCommands;
 
@@ -28,6 +33,7 @@ namespace RebindableInput
     //!
     //! Every entity's bindings are built the same way, on registration and after every change of the player:
     //! clone the asset's bindings -> sort them into key slots -> apply the player's changes -> activate.
+    //! The player's changes are loaded from the player's file in Activate and written by SaveBindings.
     class RebindableInputSystemComponent
         : public AZ::Component
         , protected RebindableInputRequestBus::Handler
@@ -59,6 +65,11 @@ namespace RebindableInput
         void ClearBinding(const AZStd::string& actionName, DeviceGroup group, BindingSlot slot) override;
         void ResetAction(const AZStd::string& actionName) override;
         void ResetAll() override;
+        void SaveBindings() override;
+        void RevertBindings() override;
+        bool StartCapture(const AZStd::string& actionName, DeviceGroup group, BindingSlot slot) override;
+        void CancelCapture() override;
+        bool IsCapturing() const override;
         ////////////////////////////////////////////////////////////////////////
 
         ////////////////////////////////////////////////////////////////////////
@@ -110,15 +121,6 @@ namespace RebindableInput
             AzFramework::LocalUserId m_localUserId = AzFramework::LocalUserIdNone;
         };
 
-        //! One change of the player: a slot that differs from the default.
-        struct PlayerOverride
-        {
-            AZStd::string m_actionName;
-            DeviceGroup m_group = DeviceGroup::KeyboardMouse;
-            BindingSlot m_slot = BindingSlot::Primary;
-            AZStd::string m_channelName; //!< empty: the player emptied the slot
-        };
-
         //! Returns the entry of the entity, or nullptr if the entity has no bindings.
         EntityBindings* FindEntityBindings(AZ::EntityId entityId);
 
@@ -126,15 +128,45 @@ namespace RebindableInput
         const ActionSlots* FindActionSlots(const AZStd::string& actionName) const;
 
         //! Clones the entry's asset, sorts the bindings into slots, applies the player's changes and activates them.
-        //! warn: report bindings that do not fit into the slots (only on registration, not on every change).
-        void BuildBindings(EntityBindings& entry, bool warn);
+        //! registering: the defaults may be new (the entity registers, its asset was reloaded, the player's file arrived):
+        //! report bindings that do not fit, resolve defaults that took a key of the player, and remember the defaults.
+        //! False after the player's own changes, where the defaults are already known.
+        void BuildBindings(EntityBindings& entry, bool registering);
 
         //! Sorts the handlers of one group (action) into slots and makes them match the slots after the player's changes:
         //! changes the channel of existing handlers, creates handlers for filled empty slots, frees handlers of emptied slots.
-        void ApplySlots(InputEventGroup& group, ActionSlots& action, AZ::SerializeContext& serializeContext, AZ::EntityId entityId, bool warn) const;
+        //! Defaults emptied because the player took their key are added to resolvedConflicts (only when registering).
+        void ApplySlots(InputEventGroup& group, ActionSlots& action, AZ::SerializeContext& serializeContext, AZ::EntityId entityId,
+            bool registering, AZStd::vector<SlotRecord>& resolvedConflicts) const;
 
-        //! Rebuilds the bindings of every entity: called after the player's changes.
-        void RebuildAllBindings();
+        //! Rebuilds the bindings of every entity: after the player's changes, or with registering after the player's file arrived.
+        void RebuildAllBindings(bool registering = false);
+
+        //! The kind of channel a slot of the action accepts: the kind of its defaults in this device group.
+        //! Without defaults there, a button action in the other group accepts buttons; an axis action accepts nothing
+        //! (it cannot be moved to another device).
+        static AZStd::optional<ChannelKind> GetExpectedKind(const ActionSlots& action, DeviceGroup group);
+
+        //! Whether the channel fits a slot of the action in this device group (device group and kind, not a reserved key).
+        static bool AcceptsChannel(const ActionSlots& action, DeviceGroup group, const AZStd::string& channelName);
+
+        //! Whether one of the player's changes puts this channel into a slot of this device group.
+        bool IsTakenByPlayer(DeviceGroup group, const AZStd::string& channelName) const;
+
+        //! The default of the slot as the player last saw it, or nullptr for a slot the player has not seen.
+        const AZStd::string* FindKnownDefault(const AZStd::string& actionName, DeviceGroup group, BindingSlot slot) const;
+
+        //! Remembers the current defaults of the action: they are written with the next SaveBindings.
+        void RememberDefaults(const ActionSlots& action);
+
+        //! Asks the storage for the player's file; the answer may come later (SaveData).
+        void LoadPlayerBindings();
+
+        //! Applies the player's file: replaces the player's changes and the known defaults and rebuilds the bindings.
+        void OnPlayerBindingsLoaded(PlayerBindingsStorage::LoadResult result, const AZStd::string& text);
+
+        //! Sends RebindableInputNotifications::OnBindingsSaved.
+        static void NotifyBindingsSaved(bool success);
 
         //! Stores a change of the player; a change back to the default removes the stored change.
         void SetOverride(const AZStd::string& actionName, DeviceGroup group, BindingSlot slot, const AZStd::string& channelName);
@@ -163,10 +195,28 @@ namespace RebindableInput
         //! Stored by pointer: the bindings never move in memory when the vector grows or an entry is erased.
         AZStd::vector<AZStd::unique_ptr<EntityBindings>> m_entityBindings;
 
-        //! The player's changes, applied to every entity that has the action. Saved and loaded in a later step.
-        AZStd::vector<PlayerOverride> m_overrides;
+        //! The player's changes (slots that differ from the default; an empty channel is an emptied slot),
+        //! applied to every entity that has the action.
+        AZStd::vector<SlotRecord> m_overrides;
 
-        //! Debug console commands (rebind_list, rebind_set, ...); registered while this exists, only in builds with tracing.
+        //! The player's changes as of the last successful save or load: RevertBindings returns to them.
+        AZStd::vector<SlotRecord> m_savedOverrides;
+
+        //! The defaults of every slot the player has seen: from the file, updated when entities register.
+        //! A default that differs from it is new to the player (see BuildBindings).
+        AZStd::vector<SlotRecord> m_knownDefaults;
+
+        //! Exists while the component is active. Storage callbacks hold a weak_ptr to it:
+        //! an answer that comes after Deactivate is ignored instead of touching a deactivated component.
+        AZStd::shared_ptr<int> m_callbackGuard;
+
+        //! The player's file was asked for and has not arrived yet: SaveBindings would overwrite it.
+        bool m_loadingPlayerBindings = false;
+
+        //! "Press a key" for StartCapture; exists while the component is active.
+        AZStd::unique_ptr<InputCapture> m_inputCapture;
+
+        //! Debug console commands (rebind_list, rebind_set, ...); registered while this exists, only in builds with tracing (not in release).
         AZStd::unique_ptr<RebindableInputConsoleCommands> m_consoleCommands;
     };
 

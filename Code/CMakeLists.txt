@@ -55,6 +55,9 @@ ly_add_target(
             Gem::StartingPointInput
             # This gem implements InputHintsContract.
             Gem::InputHintsContract.API
+            # The player's bindings file is stored through SaveData's bus in release builds.
+            # SaveData has no .API target; only the bus headers are used, so no SaveData code is linked in.
+            Gem::SaveData.Static
 )
 
 # Here add ${gem_name} target, it depends on the Private Object library and Public API interface
