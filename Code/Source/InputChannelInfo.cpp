@@ -64,6 +64,18 @@ namespace RebindableInput
         return AZStd::nullopt;
     }
 
+    const AzFramework::InputChannelId* InputChannelInfo::FindKeyboardChannelId(AZStd::string_view channelName)
+    {
+        for (const AzFramework::InputChannelId& channelId : AzFramework::InputDeviceKeyboard::Key::All)
+        {
+            if (channelName == channelId.GetName())
+            {
+                return &channelId;
+            }
+        }
+        return nullptr;
+    }
+
     AZStd::optional<DeviceGroup> InputChannelInfo::GetDeviceGroup(AZStd::string_view deviceType)
     {
         if (deviceType == AzFramework::InputDeviceKeyboard::Id.GetName() || deviceType == AzFramework::InputDeviceMouse::Id.GetName())

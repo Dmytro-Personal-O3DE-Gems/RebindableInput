@@ -3,6 +3,7 @@
 
 #include <RebindableInput/RebindableInputTypeIds.h>
 
+#include <ActiveDeviceTracker.h>
 #include <InputCapture.h>
 #include <InputChannelInfo.h>
 #include <InputChannelText.h>
@@ -16,6 +17,7 @@
 #include <AzCore/Component/ComponentApplicationBus.h>
 #include <AzCore/Serialization/SerializeContext.h>
 #include <AzCore/std/algorithm.h>
+#include <AzFramework/Input/Buses/Requests/InputDeviceRequestBus.h>
 #include <AzFramework/Input/Devices/Keyboard/InputDeviceKeyboard.h>
 #include <AzFramework/Input/Devices/Mouse/InputDeviceMouse.h>
 #include <AzCore/std/smart_ptr/weak_ptr.h>
@@ -125,6 +127,13 @@ namespace RebindableInput
 
         m_inputCapture = AZStd::make_unique<InputCapture>();
 
+        // Which device group the player uses: the input hints show the keys of that group.
+        m_activeDeviceTracker = AZStd::make_unique<ActiveDeviceTracker>([](DeviceGroup group)
+        {
+            RebindableInputNotificationBus::Broadcast(&RebindableInputNotifications::OnActiveDeviceGroupChanged, group);
+            NotifyInputHintsChanged();
+        });
+
 #if defined(AZ_ENABLE_TRACING)
         // After the rebinding API is ready: the commands only call it.
         // Only in builds with tracing (debug, profile): debug commands that change the bindings are not for players.
@@ -139,6 +148,7 @@ namespace RebindableInput
 
         // Stops listening to input; a capture in progress ends without a notification.
         m_inputCapture.reset();
+        m_activeDeviceTracker.reset();
 
         // Answers of the storage that arrive from now on are ignored. The player's state is loaded again on the next Activate.
         m_callbackGuard.reset();
@@ -489,6 +499,25 @@ namespace RebindableInput
         }
     }
 
+    KeyText RebindableInputSystemComponent::GetKeyText(const AZStd::string& channelName)
+    {
+        // A channel without text shows its raw name: a visible mistake (SetBindings already warned about it).
+        KeyText text = InputChannelText::GetText(channelName).value_or(KeyText{ AZStd::string(), channelName });
+
+        if (InputChannelText::UsesLayoutText(channelName))
+        {
+            if (const AzFramework::InputChannelId* channelId = InputChannelInfo::FindKeyboardChannelId(channelName))
+            {
+                // Windows: GetKeyNameTextW by scan code (letters always Latin, A-Z). Linux: not implemented, stays empty.
+                AZStd::string layoutText;
+                AzFramework::InputDeviceRequestBus::Event(AzFramework::InputDeviceKeyboard::Id,
+                    &AzFramework::InputDeviceRequests::GetPhysicalKeyOrButtonText, *channelId, layoutText);
+                text.m_defaultText = InputChannelText::ChooseLayoutText(text.m_defaultText, layoutText);
+            }
+        }
+        return text;
+    }
+
     AZStd::optional<ChannelKind> RebindableInputSystemComponent::GetExpectedKind(const ActionSlots& action, DeviceGroup group)
     {
         const size_t g = static_cast<size_t>(group);
@@ -607,7 +636,8 @@ namespace RebindableInput
         {
             return AZStd::nullopt;
         }
-        return SlotBinding{ channel, InputChannelText::GetDisplayText(channel).value_or(channel) };
+        const KeyText text = GetKeyText(channel);
+        return SlotBinding{ channel, text.m_key, text.m_defaultText };
     }
 
     AZStd::optional<BindingConflict> RebindableInputSystemComponent::FindConflict(
@@ -801,6 +831,11 @@ namespace RebindableInput
         return m_inputCapture && m_inputCapture->IsCapturing();
     }
 
+    DeviceGroup RebindableInputSystemComponent::GetActiveDeviceGroup() const
+    {
+        return m_activeDeviceTracker ? m_activeDeviceTracker->GetActiveGroup() : DeviceGroup::KeyboardMouse;
+    }
+
     ////////////////////////////////////////////////////////////////////////
     // The player's file
 
@@ -898,10 +933,11 @@ namespace RebindableInput
 
     AZStd::optional<InputHintsContract::InputHint> RebindableInputSystemComponent::GetInputHint(const AZStd::string& actionName) const
     {
-        // The first filled keyboard and mouse slot of the action: the primary key, or the alternate one if the
-        // player emptied the primary slot. Entities are searched in registration order.
-        // TODO: pick by the device group the player uses right now (keyboard and mouse or gamepad).
-        const size_t g = static_cast<size_t>(DeviceGroup::KeyboardMouse);
+        // The first filled slot of the action in the device group the player uses right now: the primary key, or the
+        // alternate one if the primary slot is empty. No key in this group: no hint (UI shows its "unbound" text),
+        // even if the other group has one: the player has the device of this group in hand.
+        // Entities are searched in registration order.
+        const size_t g = static_cast<size_t>(GetActiveDeviceGroup());
         for (const AZStd::unique_ptr<EntityBindings>& entry : m_entityBindings)
         {
             for (const ActionSlots& action : entry->m_actions)
@@ -914,9 +950,11 @@ namespace RebindableInput
                 {
                     if (!channel.empty())
                     {
-                        // A channel without text shows its raw name: a visible mistake (SetBindings already warned about it).
+                        // Not translated here: the UI translates the key (see InputHintsContract::InputHint).
+                        const KeyText text = GetKeyText(channel);
                         InputHintsContract::InputHint hint;
-                        hint.m_text = InputChannelText::GetDisplayText(channel).value_or(channel);
+                        hint.m_key = text.m_key;
+                        hint.m_defaultText = text.m_defaultText;
                         return hint;
                     }
                 }

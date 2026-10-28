@@ -32,10 +32,14 @@ namespace RebindableInput
     inline constexpr size_t BindingSlotCount = 2;
 
     //! What is in a key slot.
+    //! The text for the player is not translated by this gem; read m_key and m_defaultText like
+    //! InputHintsContract::InputHint: an empty key means "show m_defaultText as it is", otherwise the translation of
+    //! m_key, or m_defaultText if there is none.
     struct SlotBinding
     {
-        AZStd::string m_channelName; //!< engine name of the key, e.g. "keyboard_key_alphanumeric_E"
-        AZStd::string m_displayText; //!< text for the player, e.g. "E"
+        AZStd::string m_channelName; //!< engine name of the key, e.g. "keyboard_key_edit_space"
+        AZStd::string m_key;         //!< localization key, e.g. "input.key.space"; empty for letters, digits, F-keys
+        AZStd::string m_defaultText; //!< English text, e.g. "Space"
     };
 
     //! Another action that already uses a key.
@@ -124,6 +128,11 @@ namespace RebindableInput
         virtual void CancelCapture() = 0;
 
         virtual bool IsCapturing() const = 0;
+
+        //! The device group the player uses right now: switched by the player's input (not by mouse movement), and before
+        //! the first input by a gamepad connecting. Input hints show the keys of this group.
+        //! Changes are sent as RebindableInputNotifications::OnActiveDeviceGroupChanged.
+        virtual DeviceGroup GetActiveDeviceGroup() const = 0;
     };
 
     class RebindableInputBusTraits

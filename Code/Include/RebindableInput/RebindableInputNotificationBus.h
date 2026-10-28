@@ -32,6 +32,10 @@ namespace RebindableInput
             [[maybe_unused]] BindingSlot slot,
             [[maybe_unused]] const AZStd::string& channelName) {}
 
+        //! The player switched between keyboard and mouse and gamepad. Input hints are already updated
+        //! (InputHintsContractNotifications::OnInputHintsChanged is sent as well).
+        virtual void OnActiveDeviceGroupChanged([[maybe_unused]] DeviceGroup group) {}
+
         //! The capture for the slot ended without a key: Escape, gamepad Start, CancelCapture or a new StartCapture.
         virtual void OnCaptureCancelled(
             [[maybe_unused]] const AZStd::string& actionName,

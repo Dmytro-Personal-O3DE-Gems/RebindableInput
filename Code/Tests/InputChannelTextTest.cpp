@@ -53,10 +53,34 @@ namespace RebindableInputTests
         EXPECT_EQ(InputChannelText::GetDisplayText("keyboard_key_modifier_shift_r"), AZStd::string("Shift"));
     }
 
-    TEST_F(InputChannelTextTest, NumpadDigitsFollowTheRuleAndTheRestComesFromTheTable)
+    TEST_F(InputChannelTextTest, NumpadKeysComeFromTheTable)
     {
         EXPECT_EQ(InputChannelText::GetDisplayText("keyboard_key_numpad_5"), AZStd::string("Num 5"));
         EXPECT_EQ(InputChannelText::GetDisplayText("keyboard_key_numpad_add"), AZStd::string("Num +"));
+    }
+
+    TEST_F(InputChannelTextTest, WordsHaveALocalizationKey)
+    {
+        const AZStd::optional<RebindableInput::KeyText> space = InputChannelText::GetText("keyboard_key_edit_space");
+        ASSERT_TRUE(space.has_value());
+        EXPECT_EQ(space->m_key, "input.key.space");
+        EXPECT_EQ(space->m_defaultText, "Space");
+
+        // "Num 5" is a phrase: its word order may differ, so each numpad digit has its own key.
+        const AZStd::optional<RebindableInput::KeyText> numpad = InputChannelText::GetText("keyboard_key_numpad_5");
+        ASSERT_TRUE(numpad.has_value());
+        EXPECT_EQ(numpad->m_key, "input.key.numpad_5");
+    }
+
+    TEST_F(InputChannelTextTest, LettersDigitsFunctionKeysAndSymbolsAreNotTranslated)
+    {
+        for (const char* channelName : { "keyboard_key_alphanumeric_E", "keyboard_key_alphanumeric_7",
+                 "keyboard_key_function_F01", "keyboard_key_punctuation_comma", "gamepad_button_a" })
+        {
+            const AZStd::optional<RebindableInput::KeyText> text = InputChannelText::GetText(channelName);
+            ASSERT_TRUE(text.has_value()) << channelName;
+            EXPECT_TRUE(text->m_key.empty()) << channelName;
+        }
     }
 
     TEST_F(InputChannelTextTest, MouseAndGamepad)
@@ -96,5 +120,30 @@ namespace RebindableInputTests
         ExpectTextForAll(AzFramework::InputDeviceGamepad::ThumbStickAxis2D::All);
         ExpectTextForAll(AzFramework::InputDeviceGamepad::ThumbStickAxis1D::All);
         ExpectTextForAll(AzFramework::InputDeviceGamepad::ThumbStickDirection::All);
+    }
+    TEST_F(InputChannelTextTest, LettersAndPunctuationFollowTheLayout)
+    {
+        EXPECT_TRUE(InputChannelText::UsesLayoutText("keyboard_key_alphanumeric_Q"));
+        EXPECT_TRUE(InputChannelText::UsesLayoutText("keyboard_key_punctuation_semicolon"));
+        EXPECT_TRUE(InputChannelText::UsesLayoutText("keyboard_key_supplementary_iso"));
+
+        // Digits keep the digit printed on the key; words follow the game's language; the rest has no layout text.
+        EXPECT_FALSE(InputChannelText::UsesLayoutText("keyboard_key_alphanumeric_1"));
+        EXPECT_FALSE(InputChannelText::UsesLayoutText("keyboard_key_edit_space"));
+        EXPECT_FALSE(InputChannelText::UsesLayoutText("keyboard_key_function_F01"));
+        EXPECT_FALSE(InputChannelText::UsesLayoutText("keyboard_key_numpad_5"));
+        EXPECT_FALSE(InputChannelText::UsesLayoutText("mouse_button_left"));
+    }
+
+    TEST_F(InputChannelTextTest, LayoutTextIsUsedOnlyIfItIsOnePrintableAsciiCharacter)
+    {
+        EXPECT_EQ(InputChannelText::ChooseLayoutText("Q", "A"), "A");    // AZERTY
+        EXPECT_EQ(InputChannelText::ChooseLayoutText(";", "M"), "M");    // AZERTY: a letter where QWERTY has ';'
+        EXPECT_EQ(InputChannelText::ChooseLayoutText("ISO", "<"), "<");  // German: the extra key of ISO keyboards
+
+        EXPECT_EQ(InputChannelText::ChooseLayoutText(";", "\xD0\x96"), ";");  // Russian: Cyrillic Zhe (UTF-8)
+        EXPECT_EQ(InputChannelText::ChooseLayoutText("[", "ACUTE"), "[");     // a dead key is spelled out
+        EXPECT_EQ(InputChannelText::ChooseLayoutText("Q", ""), "Q");          // no layout text (Linux)
+        EXPECT_EQ(InputChannelText::ChooseLayoutText("Q", " "), "Q");         // a space is not a key name
     }
 } // namespace RebindableInputTests

@@ -6,6 +6,8 @@ set(FILES
     Source/Clients/RebindableInputSystemComponent.h
     Source/RebindableInputComponent.cpp
     Source/RebindableInputComponent.h
+    Source/ActiveDeviceTracker.cpp
+    Source/ActiveDeviceTracker.h
     Source/BindingsRegistry.h
     Source/RebindableInputConsoleCommands.cpp
     Source/RebindableInputConsoleCommands.h
@@ -19,6 +21,7 @@ set(FILES
     Source/InputEventGroup.h
     Source/InputEventMap.cpp
     Source/InputEventMap.h
+    Source/LocalizationKeyMarker.h
     Source/PlayerBindingsFile.cpp
     Source/PlayerBindingsFile.h
     Source/PlayerBindingsStorage.cpp

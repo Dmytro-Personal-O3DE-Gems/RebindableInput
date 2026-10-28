@@ -1,6 +1,8 @@
 
 #pragma once
 
+#include <AzFramework/Input/Channels/InputChannelId.h>
+
 #include <RebindableInput/RebindableInputBus.h>
 
 #include <AzCore/std/optional.h>
@@ -36,5 +38,9 @@ namespace RebindableInput
 
         //! The device group of a device type as stored in InputEventMap, or an empty optional for other devices.
         static AZStd::optional<DeviceGroup> GetDeviceGroup(AZStd::string_view deviceType);
+
+        //! The engine's id of a keyboard key (from InputDeviceKeyboard::Key::All), or nullptr for any other name.
+        //! Points into the engine's static constants, so it stays valid while the program runs.
+        static const AzFramework::InputChannelId* FindKeyboardChannelId(AZStd::string_view channelName);
     };
 } // namespace RebindableInput

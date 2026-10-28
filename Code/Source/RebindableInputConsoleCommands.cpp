@@ -118,7 +118,7 @@ namespace RebindableInput
             {
                 return "-";
             }
-            return AZStd::string::format("%s (%s)", binding->m_displayText.c_str(), binding->m_channelName.c_str());
+            return AZStd::string::format("%s (%s)", binding->m_defaultText.c_str(), binding->m_channelName.c_str());
         }
 
         //! One line per action: both slots of both device groups.
@@ -177,6 +177,9 @@ namespace RebindableInput
                 PrintAction(*api, actionName);
                 return;
             }
+
+            AZ_Printf(Window, "Active device group: %s\n",
+                api->GetActiveDeviceGroup() == DeviceGroup::Gamepad ? "Gamepad" : "KeyboardMouse");
 
             const AZStd::vector<AZStd::string> actions = api->GetActions();
             if (actions.empty())

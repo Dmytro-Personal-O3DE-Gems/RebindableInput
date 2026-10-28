@@ -12,6 +12,7 @@
 
 #include <BindingsRegistry.h>
 #include <InputChannelInfo.h>
+#include <InputChannelText.h>
 #include <InputEventBindings.h>
 #include <PlayerBindingsFile.h>
 #include <PlayerBindingsStorage.h>
@@ -23,6 +24,7 @@ namespace AZ
 
 namespace RebindableInput
 {
+    class ActiveDeviceTracker;
     class InputCapture;
     class InputEventMap;
     class RebindableInputConsoleCommands;
@@ -70,6 +72,7 @@ namespace RebindableInput
         bool StartCapture(const AZStd::string& actionName, DeviceGroup group, BindingSlot slot) override;
         void CancelCapture() override;
         bool IsCapturing() const override;
+        DeviceGroup GetActiveDeviceGroup() const override;
         ////////////////////////////////////////////////////////////////////////
 
         ////////////////////////////////////////////////////////////////////////
@@ -142,6 +145,11 @@ namespace RebindableInput
         //! Rebuilds the bindings of every entity: after the player's changes, or with registering after the player's file arrived.
         void RebuildAllBindings(bool registering = false);
 
+        //! The text of a key for the player: the key and English text from InputChannelText, and for letters and punctuation
+        //! the character printed on the key in the player's keyboard layout (asked from the engine every time: the player
+        //! may switch the layout while playing). A channel without text gives its raw name.
+        static KeyText GetKeyText(const AZStd::string& channelName);
+
         //! The kind of channel a slot of the action accepts: the kind of its defaults in this device group.
         //! Without defaults there, a button action in the other group accepts buttons; an axis action accepts nothing
         //! (it cannot be moved to another device).
@@ -212,6 +220,9 @@ namespace RebindableInput
 
         //! The player's file was asked for and has not arrived yet: SaveBindings would overwrite it.
         bool m_loadingPlayerBindings = false;
+
+        //! Which device group the player uses; exists while the component is active.
+        AZStd::unique_ptr<ActiveDeviceTracker> m_activeDeviceTracker;
 
         //! "Press a key" for StartCapture; exists while the component is active.
         AZStd::unique_ptr<InputCapture> m_inputCapture;
