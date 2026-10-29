@@ -15,6 +15,13 @@ namespace RebindableInput
     {
         //! Keys and buttons are 1 when pressed; triggers, stick directions, stick axes and whole sticks must pass half way.
         constexpr float SwitchThreshold = 0.5f;
+
+        //! Mouse movement switches once it adds up to this within MouseTravelWindow. The deltas are raw sensor counts
+        //! (WM_INPUT on Windows), so the distance depends on the mouse's DPI: 150 counts are about 5 mm at 800 DPI and
+        //! 2.4 mm at 1600 DPI. A bump or jitter stays below that, a deliberate look around passes it in a fraction of
+        //! a second. TODO: tune with more mice.
+        constexpr float MouseTravelThreshold = 150.0f;
+        constexpr AZStd::chrono::milliseconds MouseTravelWindow{ 200 };
     } // namespace
 
     ActiveDeviceTracker::ActiveDeviceTracker(ChangedCallback onChanged)
@@ -47,8 +54,14 @@ namespace RebindableInput
         bool counts = false;
         if (info->m_kind == ChannelKind::MouseAxis)
         {
-            // Movement does not switch; the wheel does (one event per notch).
-            counts = inputChannel.GetInputChannelId() == AzFramework::InputDeviceMouse::Movement::Z && inputChannel.GetValue() != 0.0f;
+            if (inputChannel.GetInputChannelId() == AzFramework::InputDeviceMouse::Movement::Z)
+            {
+                counts = inputChannel.GetValue() != 0.0f; // the wheel: one event per notch, always deliberate
+            }
+            else
+            {
+                counts = AddMouseTravel(AZ::GetAbs(inputChannel.GetValue()));
+            }
         }
         else
         {
@@ -80,6 +93,24 @@ namespace RebindableInput
         }
     }
 
+    bool ActiveDeviceTracker::AddMouseTravel(float distance)
+    {
+        if (m_activeGroup == DeviceGroup::KeyboardMouse)
+        {
+            return false; // already there: nothing to switch, and no travel to carry over
+        }
+
+        // A fixed window from the first movement: jitter spread over minutes never adds up.
+        const AZStd::chrono::steady_clock::time_point now = AZStd::chrono::steady_clock::now();
+        if (now - m_mouseTravelStart > MouseTravelWindow)
+        {
+            m_mouseTravel = 0.0f;
+            m_mouseTravelStart = now;
+        }
+        m_mouseTravel += distance;
+        return m_mouseTravel >= MouseTravelThreshold;
+    }
+
     void ActiveDeviceTracker::SetActiveGroup(DeviceGroup group)
     {
         if (group == m_activeGroup)
@@ -87,6 +118,7 @@ namespace RebindableInput
             return;
         }
         m_activeGroup = group;
+        m_mouseTravel = 0.0f; // movement from before the switch must not count towards the next one
         if (m_onChanged)
         {
             m_onChanged(group);

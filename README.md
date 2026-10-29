@@ -182,7 +182,7 @@ DeviceGroup group = rebinding->GetActiveDeviceGroup();
 // RebindableInputNotifications::OnActiveDeviceGroupChanged(DeviceGroup group)
 ```
 
-- Input switches the group: keys, mouse buttons and the wheel; gamepad buttons, and triggers and sticks past half way. **Mouse movement does not switch**, nor does a drifting stick.
+- Input switches the group: keys, mouse buttons and the wheel; gamepad buttons, and triggers and sticks past half way. Mouse movement switches only once it adds up to a real movement within a short time (150 sensor counts in 0.2 s), so a bumped desk or a drifting stick does not switch.
 - Before the player's first input, a gamepad that connects switches to the gamepad: a player who starts with a gamepad sees gamepad hints on the first screen.
 - Input hints show the key of the active group. If the action has no key in that group, there is no hint (the UI shows its own "unbound" text).
 
